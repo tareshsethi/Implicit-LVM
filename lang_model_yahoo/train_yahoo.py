@@ -13,6 +13,7 @@ from data import Dataset
 import numpy as np
 import math
 from tqdm import tqdm
+import pickle
 
 parser = argparse.ArgumentParser()
 
@@ -26,6 +27,9 @@ parser.add_argument('--seed', default=0, type=int)
 parser.add_argument('--test', action="store_true")
 parser.add_argument('--log_prefix', default='eval')
 parser.add_argument('--model', default='mle', type=str, choices=['mle', 'mle_mi'])
+
+# parser.add_argument('--extract_embeddings_from', default='')
+parser.add_argument('--extract_embeddings', action='store_true')
 
 # KL cost annealing, increase beta from beta_0 by 1/warmup in certain steps
 parser.add_argument('--warmup', default=10, type=int)
@@ -116,6 +120,11 @@ nu_xz_optimizer = optim.Adam(nu_xz.parameters(), lr=args.nu_lr)
 nu_z_optimizer = optim.Adam(nu_z.parameters(), lr=args.nu_lr)
 end2end_optimizer = optim.Adam(chain(encoder.parameters(), decoder.parameters()), lr=args.end2end_lr)
 
+# assert args.train_from == "" or args.extract_embeddings_from == "", "support for train from and extract from together is not tested right now"
+if args.extract_embeddings:
+    assert args.train_from != '', 'must provide a --train_from argument to specify where the trained model is (path)'
+
+
 if args.train_from == "":
     for param in encoder.parameters():
         param.data.uniform_(-0.01, 0.01)
@@ -151,12 +160,38 @@ else:
     beta = checkpoint['beta']
     epo_0 = int(args.train_from[-6:-3])
 
+# if args.extract_embeddings_from == "":
+#     for param in encoder.parameters():
+#         param.data.uniform_(-0.01, 0.01)
+#     for param in decoder.parameters():
+#         param.data.uniform_(-0.01, 0.01)
+#     if gpu:
+#         encoder = encoder.cuda()
+#         decoder = decoder.cuda()
+#         nu_xz = nu_xz.cuda()
+#         nu_z = nu_z.cuda()
+#         criterion.cuda()
+# else:
+#     logging.info('load model from' + args.extract_embeddings_from)
+#     checkpoint = torch.load(args.extract_embeddings_from, map_location="cuda:" + str(args.gpu) if gpu else 'cpu')
+
+#     encoder = checkpoint['encoder']
+#     decoder = checkpoint['decoder']
+#     nu_xz = checkpoint['nu_xz']
+#     nu_z = checkpoint['nu_z']
+#     criterion = checkpoint['criterion']
+#     nu_xz_optimizer = checkpoint['nu_xz_optimizer']
+#     nu_z_optimizer = checkpoint['nu_z_optimizer']
+#     end2end_optimizer = checkpoint['end2end_optimizer']
+
+#     beta = checkpoint['beta']
+#     epo_0 = int(args.extract_embeddings_from[-6:-3])
+
 logging.info("model configuration:")
 logging.info(str(encoder))
 logging.info(str(decoder))
 logging.info(str(nu_xz))
 logging.info(str(nu_z))
-
 
 def evaluation(data):
     encoder.eval()
@@ -236,6 +271,33 @@ def evaluation(data):
 
     return nelbo
 
+def extract_embeddings(decoder, vocab, num_sentences, reconstruction=False, data=test_data):
+    logging.info('---------------- Sample sentences: ----------------')
+    decoder.eval()
+    sampled_sents = []
+
+    sample_batch = torch.randint(len(data), (1,))
+
+    sents_batch, length, batch_size = data[sample_batch]
+    batch_size = batch_size.item()
+    if gpu: sents_batch = sents_batch.cuda()
+    eps = torch.randn((batch_size, args.latent_dim), device=sents_batch.device)
+    z_x, _ = encoder(sents_batch, eps)
+    # print (z_x.shape)
+    expand_int = torch.randint(z_x.shape[0], (num_sentences,)).tolist()
+    z_x = z_x.data[expand_int, :] # 50x32
+    sents = sents_batch.data[expand_int, :].tolist() # len of 50
+    sents = [[vocab.idx2word[s] for s in sents[i]] for i in range(num_sentences)]
+
+    if extract_embeddings:
+        dict_embeddings = {}
+        sents = [' '.join(sent) for sent in sents]
+
+        embeddings = z_x.cpu()
+        dict_embeddings ['embeddings'] = embeddings
+        dict_embeddings ['sentences'] = sents
+        with open('{}.pickle'.format("test_path/embeddings"), 'wb') as handle:
+            pickle.dump(dict_embeddings, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 def sample_sentences(decoder, vocab, num_sentences, reconstruction=False, data=test_data):
     logging.info('---------------- Sample sentences: ----------------')
@@ -335,9 +397,14 @@ if args.test:
     logging.info('\n------------------------------------------------------')
     logging.info("evaluation:")
     evaluation(test_data)
-    # sample_sentences(decoder, vocab, num_sentences=50, reconstruction=False, data=test_data)
     # sample_sentences(decoder, vocab, num_sentences=50, reconstruction=True, data=test_data)
+    # sample_sentences(decoder, vocab, num_sentences=50, reconstruvmction=True, data=test_data)
     exit()
+
+if args.extract_embeddings:
+    print ('reached')
+    extract_embeddings(decoder, vocab, num_sentences=50, reconstruction=True, data=test_data)
+    sys.exit(0)
 
 
 logging.info('\n------------------------------------------------------')
@@ -346,7 +413,9 @@ print("the current epo is %d of %d" % (epo_0, args.num_epochs))
 logging.info("evaluation:")
 print("evaluation:")
 check_point(epo_0)
+
 # evaluation(test_data)
+# print ('ljfkads')
 # sample_sentences(decoder, vocab, num_sentences=50, reconstruction=False, data=test_data)
 # sample_sentences(decoder, vocab, num_sentences=50, reconstruction=True, data=test_data)
 
